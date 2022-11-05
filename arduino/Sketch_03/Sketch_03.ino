@@ -1,0 +1,192 @@
+
+#include <stdlib.h>
+/*************************************************************************/
+
+#include "DHT.h"
+
+#define DHTPIN 2     // Digital pin connected to the DHT sensor
+
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+/**************************************************************************/
+
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// The pins for I2C are defined by the Wire-library. 
+// On an arduino UNO:       A4(SDA), A5(SCL)
+#define OLED_RESET     4 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+#define DISPLAY_TIME 4000
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+
+/**************************************************************************/
+
+#include <RTClib.h>
+
+RTC_DS3231 rtc;
+
+// the pin that is connected to SQW of DS3231
+#define CLOCK_INTERRUPT_PIN 3
+char weekDay[][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+/**************************************************************************/
+
+//////////////////////////////////////////////////////////////
+// ************************* SETUP ***************************
+//////////////////////////////////////////////////////////////
+
+void setup()
+{
+  Serial.begin(9600);
+  //Begin I2C
+  Wire.begin();
+  //Begin OLED
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+  //Begin humidity sensor
+  dht.begin();
+
+  
+  //********************* initializing the rtc ********************
+  if(!rtc.begin()) {
+      Serial.println("Couldn't find RTC!");
+      Serial.flush();
+      abort();
+  }
+  
+  /*
+  if(rtc.lostPower()) {
+      // this will adjust to the date and time at compilation
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }*/
+    
+  //we don't need the 32K Pin, so disable it
+  rtc.disable32K();
+  // Making it so, that the alarm will trigger an interrupt
+  pinMode(CLOCK_INTERRUPT_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(CLOCK_INTERRUPT_PIN), onAlarm, FALLING);
+  // set alarm 1, 2 flag to false (so alarm 1, 2 didn't happen so far)
+  // if not done, this easily leads to problems, as both register aren't reset on reboot/recompile
+  rtc.clearAlarm(1);
+  rtc.clearAlarm(2);
+  // stop oscillating signals at SQW Pin
+  // otherwise setAlarm1 will fail
+  rtc.writeSqwPinMode(DS3231_OFF);
+  // turn off alarm 2 (in case it isn't off already)
+  // again, this isn't done at reboot, so a previously set alarm could easily go overlooked
+  rtc.disableAlarm(2);
+  // stop oscillating signals at SQW Pin
+  rtc.writeSqwPinMode(DS3231_OFF);
+  // schedule an alarm 
+  DateTime dtAlarm("2021-10-19T14:25:00");
+  if(!rtc.setAlarm1(dtAlarm,0x10)) {
+      Serial.println("Error, alarm wasn't set!\n");
+  }else {
+      Serial.print("Alarm will happen at ");  
+      Serial.println(dtAlarm.toString("DDD, DD MMM YYYY hh:mm:ss"));  
+  }
+
+  // ***************** OLED WELCOME**********************
+    char txt1[10] = "Hola";
+  char txt2[10] = "Como tas?";
+  
+  DisplayText(30, 10, txt1, 4, 0, 2, false);
+  DisplayText(0, 40, txt2, 9, DISPLAY_TIME, 2, true);
+  display.clearDisplay();
+}
+
+//***************** OLED+Temp **************************
+void DisplayTempAndHumidity()
+{
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  float h = dht.readHumidity();
+  // Read temperature as Celsius (the default)
+  float t = dht.readTemperature();
+
+  char h_str[8]; // Buffer big enough for 7-character float
+  dtostrf(h, 6, 2, h_str); // Leave room for too large numbers!
+  
+  DisplayText(0, 10, "Humidity", 5, 0, 2, false);
+  DisplayText(0,40, h_str, 5, 0, 2, true);
+  DisplayText(80,40, " %", 5, DISPLAY_TIME, 2, true);
+  
+  char t_str[8]; // Buffer big enough for 7-character float
+  dtostrf(t, 6, 2, t_str); // Leave room for too large numbers!
+  
+  DisplayText(0, 10, "Temp", 5, 0, 2, false);
+  DisplayText(0,40, t_str, 5, 0, 2, true);
+  DisplayText(80,40, " C", 5, DISPLAY_TIME, 2, true);
+  
+}
+
+void DisplayText(int16_t curX, int16_t curY, char* text, uint8_t textLen, unsigned long displayTime, uint8_t textSize, bool holdPrevious)
+{
+
+  if(!holdPrevious)
+    display.clearDisplay();
+  display.setTextSize(textSize);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(curX,curY);
+  display.print(text);
+  display.display();
+  delay(displayTime);
+}
+
+//******************************************************
+
+
+//******************* RTC ******************************
+void DisplayDateAndTime()
+{
+  // print current time
+  char timeStr[10] = "hh:mm AP";
+  char dateStr[9] = "DD/MMM/YY";
+  uint8_t day;
+  rtc.now().toString(timeStr);
+  rtc.now().toString(dateStr);
+  day = rtc.now().dayOfTheWeek();
+  DisplayText(0, 10, dateStr, 9, 0, 2, false);
+  DisplayText(0, 40, weekDay[day], 3, 0, 2, true);
+  DisplayText(60, 47, timeStr, 5, 2*DISPLAY_TIME, 1, true);
+}
+void onAlarm() 
+{
+  DisplayText(0, 10, "ITS OPEN!", 0, DISPLAY_TIME, 2, false);
+}
+//******************************************************
+
+
+//******************* SERVO ****************************
+//******************************************************
+
+
+void loop() {
+  DisplayDateAndTime();
+  DisplayTempAndHumidity();
+
+  //Alarm: use setAlarm1 ( const DateTime &  dt, Ds3231Alarm1Mode  alarm_mode) 
+ 
+  //for alarm mode: DS3231_A1_Day 
+  DisplayText(0, 10, "Alarm1: ", 0, 0, 1, false);
+  char temp[8];
+  dtostrf(rtc.alarmFired(1), 6, 2,temp);
+  DisplayText(40, 10, temp, 0, DISPLAY_TIME, 1, true);
+ 
+ /*if(rtc.alarmFired(1)) {
+      rtc.clearAlarm(1);
+      DisplayText(0, 10, "CLEARED", 0, DISPLAY_TIME, 2, false);
+  }*/
+  
+  
+}
